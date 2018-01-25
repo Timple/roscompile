@@ -1,0 +1,229 @@
+#!/usr/bin/python
+
+from ros_introspection.cmake import Command, CMake, CommandGroup
+from ros_introspection.util import get_packages
+from ros_introspection.source_code_file import CPLUS
+from ros_introspection.resource_list import is_message, is_service
+from roscompile.manifest import replace_package_set
+from roscompile.cmake import match_generator_name
+import os
+import re
+
+BUILTIN_INTERFACES = {
+  'duration': 'builtin_interfaces/Duration',
+  'time': 'builtin_interfaces/Time'
+}
+
+CATKIN_CMAKE_VARS = {
+   '${CATKIN_GLOBAL_BIN_DESTINATION}': 'bin',
+   '${CATKIN_GLOBAL_INCLUDE_DESTINATION}': 'include',
+   '${CATKIN_GLOBAL_LIB_DESTINATION}': 'lib',
+   '${CATKIN_GLOBAL_LIBEXEC_DESTINATION}': 'lib',
+   '${CATKIN_GLOBAL_SHARE_DESTINATION}': 'share',
+   '${CATKIN_PACKAGE_BIN_DESTINATION}': 'lib/${PROJECT_NAME}',
+   '${CATKIN_PACKAGE_INCLUDE_DESTINATION}': 'include/${PROJECT_NAME}',
+   '${CATKIN_PACKAGE_LIB_DESTINATION}': 'lib',
+   '${CATKIN_PACKAGE_SHARE_DESTINATION}': 'share/${PROJECT_NAME}',
+}
+
+
+def make_include_pattern(s):
+    return '#include\s*[<\\"]' + s + '[>\\"]'
+
+
+CPP_CODE_REPLACEMENTS = {
+    make_include_pattern('ros/ros.h'): '#include "rclcpp/rclcpp.hpp"',
+    'ros::Time': 'rclcpp::Time',
+    'ros::Rate': 'rclcpp::rate::Rate',
+    'ros::ok\(\)': 'rclcpp::ok()',
+    'ros::init\(argc, argv, "[^"]"\);': 'rclcpp::init(argc, argv);',
+    'ros::spinOnce\(\);': 'rclcpp::spin_some(node);',
+
+    # boost stuff
+    make_include_pattern('boost/shared_ptr.hpp'): '#include <memory>',
+    'boost::shared_ptr': 'std::shared_ptr',
+    make_include_pattern('boost/thread/mutex.hpp'): '#include <mutex>',
+    'boost::mutex': 'std::mutex',
+    'boost::mutex::scoped_lock': 'std::unique_lock<std::mutex>',
+    make_include_pattern('boost/unordered_map.hpp'): '#include <unordered_map>',
+    'boost::unordered_map': 'std::unordered_map',
+    make_include_pattern('boost/function.hpp'): '#include <functional>',
+    'boost::function': 'std::function',
+}
+
+
+def has_duration_or_time(gen):
+    for section in gen.sections:
+        for token_array in section:
+            if token_array[0] in BUILTIN_INTERFACES:
+                return True
+    return False
+
+
+def rename_commands(cmake, source_name, target_name):
+    for cmd in cmake.content_map[source_name]:
+        cmd.command_name = target_name
+        cmd.changed = True
+    cmake.content_map[target_name] = cmake.content_map[source_name]
+    del cmake.content_map[source_name]
+
+
+def set_build_type(manifest, build_type):
+    export_tags = manifest.root.getElementsByTagName('export')
+    if len(export_tags) == 0:
+        export_tag = manifest.tree.createElement('export')
+        manifest.insert_new_tags([export_tag])
+        export_tags = [export_tag]
+    ex_el = export_tags[0]
+    built_type_tag = manifest.tree.createElement('build_type')
+    built_type_tag.appendChild(manifest.tree.createTextNode(build_type))
+    ex_el.appendChild(built_type_tag)
+
+
+def get_full_msg_dependencies_from_source(package):
+    messages = set()
+    for filename, matches in package.source_code.search_for_pattern(CPLUS):
+        for pkg, name in matches:
+            if len(name) == 0 or name[-2:] != '.h':
+                continue
+            name = name.replace('.h', '')
+            if is_message(pkg, name):
+                messages.add((pkg, name, 'msg'))
+            elif is_service(pkg, name):
+                messages.add((pkg, name, 'srv'))
+            elif pkg == package.name and match_generator_name(package, name):
+                messages.add((pkg, name, 'msg'))  # TODO: msg is a guess
+    return messages
+
+
+def replace_source_code(package, patterns, language='c++'):
+    for source in package.source_code.get_source_by_language(language):
+        s = open(source.file_path).read()
+        changed = False
+        for needle, replacement in patterns.iteritems():
+            pattern = re.compile(needle)
+            m = pattern.search(s)
+            while m:
+                this_replacement = replacement
+                if len(m.groups()) > 1:
+                    for i, chunk in enumerate(m.groups())[1:]:
+                        key = '$%d' % i
+                        this_replacement = this_replacement.replace(key, chunk)
+                before, middle, after = s.partition(m.group(0))
+                print 'In %s, replacing %s with %s' % (source.rel_fn, middle, this_replacement)
+                s = before + this_replacement + after
+
+                changed = True
+                m = pattern.search(s)
+            if changed:
+                with open(source.file_path, 'w') as f:
+                    f.write(s)
+
+
+def convert_to_underscore_notation(name):
+    # https://stackoverflow.com/questions/1175208/elegant-python-function-to-convert-camelcase-to-snake-case
+    s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+    return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+
+
+pkgs = get_packages()
+
+for package in pkgs:
+    manifest = package.manifest
+    if manifest.format < 2:
+        manifest._format = 2
+        manifest.root.setAttribute('format', '2')
+        replace_package_set(manifest, ['build_depend', 'run_depend'], 'depend')
+        replace_package_set(manifest, ['run_depend'], 'exec_depend')
+    if len(package.generators) > 0:
+        for gen in package.get_all_generators():
+            if has_duration_or_time(gen):
+                s = open(gen.file_path).read()
+                for k, v in BUILTIN_INTERFACES.iteritems():
+                    s = s.replace(k, v)
+                with open(gen.file_path, 'w') as f:
+                    f.write(s)
+
+        manifest.insert_new_packages('buildtool_depend', ['rosidl_default_generators'])
+        manifest.insert_new_packages('exec_depend', ['rosidl_default_runtime'])
+
+        # Enabling C++11
+        initial_cmd = Command('if')
+        initial_cmd.add_section('NOT')
+        initial_cmd.add_section('WIN32')
+
+        not32_contents = CMake(initial_contents=['\n'], depth=package.cmake.depth + 1)
+
+        add_defs = Command('add_definitions')
+        add_defs.add_section('', ['-std=c++11'])
+        not32_contents.add_command(add_defs)
+
+        cg = CommandGroup(initial_cmd, not32_contents, Command('endif'))
+        package.cmake.add_command(cg)
+
+        # Other msg operations
+        fp = Command('find_package')
+        fp.add_section('', 'rosidl_default_generators')
+        fp.add_section('REQUIRED')
+        package.cmake.add_command(fp)
+
+        idl = Command('rosidl_generate_interfaces')
+        idl.add_section('', ['${PROJECT_NAME}'] + [gen.name for gen in package.get_all_generators()])
+        idl.add_section('DEPENDENCIES', package.get_dependencies_from_msgs())
+        package.cmake.add_command(idl)
+
+        for old_cmd_name in ['add_message_files', 'add_service_files', 'generate_messages']:
+            for cmd in package.cmake.content_map[old_cmd_name]:
+                package.cmake.remove_command(cmd)
+
+    # Pure Python
+    if len(package.generators) == 0 and len(package.source_code.get_source_by_language('python')) > 0 and \
+       not package.source_code.get_source_by_language('c++'):
+        set_build_type(package.manifest, 'ament_python')
+        os.path.remove(package.cmake.file_path)
+    else:
+        set_build_type(package.manifest, 'ament_cmake')
+
+        for cmd in package.cmake.content_map['find_package']:
+            if cmd.get_tokens()[0] != 'catkin' or not cmd.get_section('REQUIRED'):
+                continue
+            components = ['ament_cmake'] + cmd.get_section('COMPONENTS').values
+            package.cmake.remove_command(cmd)
+            for component in components:
+                cmd = Command('find_package')
+                cmd.add_section('', component)
+                cmd.add_section('REQUIRED')
+                package.cmake.add_command(cmd)
+
+        for cmd in package.cmake.content_map['install']:
+            section = cmd.get_section('DESTINATION')
+            if section is None:
+                continue
+            for i, value in section.values:
+                if value in CATKIN_CMAKE_VARS:
+                    section.values[i] = CATKIN_CMAKE_VARS[value]
+                    cmd.changed = True
+
+        # Muck with the source code
+        SERVICE_REPLACEMENTS = {}
+        for pkg, msg, gen_type in get_full_msg_dependencies_from_source(package):
+            key = make_include_pattern('%s/%s.h' % (pkg, msg))
+            value = '#include <%s/%s/%s.hpp>' % (pkg, gen_type, convert_to_underscore_notation(msg))
+            CPP_CODE_REPLACEMENTS[key] = value
+
+            two_colons = '%s::%s' % (pkg, msg)
+            four_colons = '%s::%s::%s' % (pkg, gen_type, msg)
+            CPP_CODE_REPLACEMENTS[two_colons] = four_colons
+
+            if gen_type == 'srv':
+                key = 'bool ([^\(]+)\(\s*' + two_colons + '::Request\s+&\s+([^,]+),\s+'
+                key += two_colons + '::Response\s+&\s+([^\)]+)\)'
+                value = 'void $1(const std::shared_ptr<' + four_colons + '::Request> $2, '
+                value += 'std::shared_ptr<' + four_colons + '::Response> $3)'
+                SERVICE_REPLACEMENTS[key] = value
+        replace_source_code(package, SERVICE_REPLACEMENTS)
+        replace_source_code(package, CPP_CODE_REPLACEMENTS)
+
+        # rename_commands(package.cmake, 'catkin_package', 'ament_package')
+
+    package.write()
