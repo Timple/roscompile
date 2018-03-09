@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="2">
   <name>roscompile</name>
-  <version>0.0.0</version>
+  <version>1.0.0</version>
   <description>The roscompile package</description>
 
   <maintainer email="davidvlu@gmail.com">David V. Lu!!</maintainer>
@@ -10,10 +10,10 @@
 
   <buildtool_depend>catkin</buildtool_depend>
   <depend>catkin</depend>
-  <depend>python-argparse</depend>
-  <depend>python-yaml</depend>
-  <depend>resource_retriever</depend>
   <depend>ros_introspection</depend>
   <test_depend>roslint</test_depend>
+  <test_depend>geometry_msgs</test_depend>
+  <test_depend>pluginlib</test_depend>
+  <test_depend>tf</test_depend>
 
 </package>

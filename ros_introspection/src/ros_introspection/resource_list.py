@@ -1,10 +1,12 @@
 import os
 import yaml
-import subprocess
+import rospkg
 import datetime
-import resource_retriever
+import requests
+from rosmsg import list_types
 
-PY_DEP_FILENAME = os.path.expanduser('~/.ros/py_deps.yaml')
+DOT_ROS_FOLDER = os.path.expanduser('~/.ros')
+PY_DEP_FILENAME = os.path.join(DOT_ROS_FOLDER, 'py_deps.yaml')
 
 PYTHON_DEPS = {}
 
@@ -18,9 +20,12 @@ def maybe_download_python_deps():
             if now - PYTHON_DEPS['last_download'] < datetime.timedelta(days=3):
                 return
 
-    ff = resource_retriever.get('https://raw.githubusercontent.com/ros/rosdistro/master/rosdep/python.yaml')
+    ff = requests.get('https://raw.githubusercontent.com/ros/rosdistro/master/rosdep/python.yaml').text
     PYTHON_DEPS = yaml.load(ff)
     PYTHON_DEPS['last_download'] = datetime.datetime.now()
+
+    if not os.path.exists(DOT_ROS_FOLDER):
+        os.mkdir(DOT_ROS_FOLDER)
     yaml.dump(PYTHON_DEPS, open(PY_DEP_FILENAME, 'w'))
 
 
@@ -34,27 +39,18 @@ def get_python_dependency(key):
 maybe_download_python_deps()
 
 
-def get_output_lines(cmd):
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    out, err = p.communicate()
-    return [s for s in out.split('\n') if len(s) > 0]
-
-
-PACKAGES = {}
+PACKAGES = set()
 MESSAGES = set()
 SERVICES = set()
 
-for line in get_output_lines(['rospack', 'list']):
-    pkg, folder = line.split()
-    PACKAGES[pkg] = folder
+rospack = rospkg.RosPack()
+for pkg in rospack.list():
+    PACKAGES.add(pkg)
+    for mode, ros_set in [('.msg', MESSAGES), ('.srv', SERVICES)]:
+        for gen_key in list_types(pkg, mode, rospack):
+            pkg, gen = gen_key.split('/')
+            ros_set.add((pkg, gen))
 
-for line in get_output_lines(['rosmsg', 'list']):
-    pkg, msg = line.split('/')
-    MESSAGES.add((pkg, msg))
-
-for line in get_output_lines(['rossrv', 'list']):
-    pkg, srv = line.split('/')
-    SERVICES.add((pkg, srv))
 
 
 def is_package(pkg):

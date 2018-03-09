@@ -2,13 +2,13 @@ cmake_minimum_required(VERSION 2.8.3)
 project(roscompile)
 
 find_package(catkin REQUIRED
-    COMPONENTS catkin resource_retriever ros_introspection
+    COMPONENTS catkin ros_introspection
 )
 
 catkin_python_setup()
 
 catkin_package(
-    CATKIN_DEPENDS catkin resource_retriever ros_introspection
+    CATKIN_DEPENDS catkin ros_introspection
 )
 
 if(CATKIN_ENABLE_TESTING)
@@ -28,4 +28,4 @@ endif()
 catkin_install_python(PROGRAMS scripts/roscompile scripts/add_tests scripts/convert_to_format_2
                       DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
-install(FILES cmake.ignore cmake_patterns.ignore package.ignore package_patterns.ignore DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/data)
+install(FILES data/cmake.ignore data/cmake_patterns.ignore data/package.ignore data/package_patterns.ignore DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/data)

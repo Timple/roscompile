@@ -11,7 +11,6 @@ class ROSGenerator:
         self.base_name = os.path.split(parts[0])[-1]
         self.type = parts[-1][1:]  # Just the extension, no dot
         self.name = os.path.basename(rel_fn)
-        self.sections = [[]]
 
         self.dependencies = set()
 
@@ -20,25 +19,16 @@ class ROSGenerator:
                 if '#' in line:
                     line = line[:line.index('#')]
                 line = line.strip()
-                if line == '':
-                    continue
-                elif AT_LEAST_THREE_DASHES.match(line):
-                    self.sections.append([])
+                if AT_LEAST_THREE_DASHES.match(line) or line == '':
                     continue
                 if '=' in line.split():
-                    index = line.index('=')
-                    tokens = line[:index].split() + [line[index+1:]]
-                else:
-                    tokens = line.split()
-
-                self.sections[-1].append(tokens)
-
-                tipo = tokens[0]
-                if '/' in tipo:
-                    # If this component is in a different package
-                    package, part = tipo.split('/')
-                    if package != self.name:
-                        self.dependencies.add(package)
+                    line = line[:line.index('=')]
+                tipo, name = line.split()
+                if '/' not in tipo:
+                    continue
+                package, part = tipo.split('/')
+                if package != self.name:
+                    self.dependencies.add(package)
 
         if self.type == 'action':
             self.dependencies.add('actionlib_msgs')
